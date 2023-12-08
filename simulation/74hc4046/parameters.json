@@ -1,0 +1,16 @@
+{
+    "S Parameters": {
+        "k_vco": 25,
+        "k_pd": 3,
+        "k_n": 1
+    },
+    "Loop Filter": {
+        "Type": "Passive",
+        "R": [1e+3, 1e+3],
+        "C": [10e-9]
+    },
+    "Target Pole": {
+        "Omega": 300,
+        "Damping": 0.8
+    }
+}
