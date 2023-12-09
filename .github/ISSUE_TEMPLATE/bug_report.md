@@ -6,6 +6,7 @@ labels: 'bug'
 assignees: ''
 
 ---
+>**Project version:** vX.X.X
 
 **Describe the bug**
 
