@@ -10,7 +10,7 @@
 .pio
 
 # Gitignores specific for VSCode
-*/.vscode/*
+.vscode
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
@@ -73,3 +73,6 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# === Python ===
+__pycache__

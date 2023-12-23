@@ -1,16 +1,19 @@
 {
+    "Operating Conditions": {
+        "Supply Voltage": 5.0,
+        "Phase Detector": "I",
+        "Input Frequency": 100e+4,
+        "Output Frequency": 100e+4
+    },
     "S Parameters": {
-        "k_vco": 25e6,
-        "k_pd": 3.14,
-        "k_n": 1
+        "k_vco": 2.51e+6
     },
     "Loop Filter": {
-        "Type": "Passive",
-        "R": [400],
-        "C": [47e-12]
+        "R": [22e+3, 0.5e+3],
+        "C": [47e-9]
     },
-    "Target Pole": {
-        "Omega": 300,
-        "Damping": 0.8
+    "Design": {
+        "Natural Frequency": 10e+3,
+        "Damping Factor": 0.8
     }
 }

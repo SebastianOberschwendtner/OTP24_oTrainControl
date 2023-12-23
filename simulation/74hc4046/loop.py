@@ -41,43 +41,29 @@ from pathlib import Path
 import json
 import argparse
 import numpy as np
-from scipy import signal
+from scipy import signal, optimize
+import matplotlib.pyplot as plt
 from termcolor import cprint
 
 # === Constants ===
+# Matplotlib style
+plt.style.use("fivethirtyeight")
 # Valid execution modes
-MODES = ["analyze", "design"]
+MODES = ["analyze", "design", "get_kvco", "step"]
 
 
 # === Functions ===
-def pll_transfer_function(parameters: dict) -> signal.TransferFunction:
-    """Creates the transfer function of the PLL loop.
+def print_value(value: float, name: str, unit: str) -> None:
+    """Prints a value with its name and unit.
 
     Args:
-        parameters (dict): The parameters from the json file.
+        value (float): The value to print.
+        name (str): The name of the value.
+        unit (str): The unit of the value.
 
-    Returns:
-        signal.TransferFunction: The transfer function of the PLL loop.
+    ---
     """
-    # Save the parameters
-    k_vco: float = parameters["S Parameters"]["k_vco"]
-    k_pd: float = parameters["S Parameters"]["k_pd"]
-    k_n: float = parameters["S Parameters"]["k_n"]
-    filter_type: str = parameters["Loop Filter"]["Type"]
-    r_filter: list[float] = parameters["Loop Filter"]["R"]
-    c_filter: list[float] = parameters["Loop Filter"]["C"]
-
-    # Check the filter type
-    if filter_type.lower() != "passive":
-        raise NotImplementedError(
-            f"Filter type '{filter_type}' is not implemented."
-        )
-
-    # Create the transfer function
-    tau = r_filter[0] * c_filter[0]
-    num = [k_vco * k_pd, k_vco * k_pd]
-    den = [tau**2, 2 * tau, 1 + k_vco * k_pd * tau, k_vco * k_pd]
-    return signal.TransferFunction(num, den)
+    print(f"{name + ':':20} {value:>14.2f} [{unit}]")
 
 
 def get_natural_frequency(pole: complex | list) -> float | list:
@@ -108,9 +94,172 @@ def get_damping_factor(pole: complex | list) -> float | list:
     return np.arctan2(pole.imag, pole.real) / np.pi
 
 
+# === Classes ===
+class HC4046:
+    """Class for the 74HC4046 PLL loop.
+
+    This class contains the parameters of the 74HC4046 PLL loop and provides
+    functions to analyze and design the loop filter.
+
+    Note:
+        This class assumes that a passive RC lag-lead filter is used as the
+        loop filter.
+
+    ---
+    """
+
+    def __init__(self, *params) -> None:
+        """Initializes the PLL loop.
+
+        ---
+        """
+        self.k_vco = 1.0
+        self.k_pd = 1.0
+        self.k_n = 1.0
+        self.r = [1.0, 1.0]
+        self.c = [1.0]
+
+        # Check if the parameters are given
+        if len(params) == 1:
+            # Set the parameters
+            self.set_parameters(params[0])
+
+    def set_parameters(self, parameters: dict) -> None:
+        """Sets the parameters of the PLL loop.
+
+        Args:
+            parameters (dict): The parameters of the PLL loop.
+
+        ---
+        """
+        # Set the parameters
+        self.k_vco = parameters["S Parameters"]["k_vco"]
+
+        # Switch for k_pd
+        match parameters["Operating Conditions"]["Phase Detector"]:
+            case "I":
+                self.k_pd = parameters["Operating Conditions"]["Supply Voltage"] / np.pi
+            case "II" | "III":
+                self.k_pd = parameters["Operating Conditions"]["Supply Voltage"] / (2 * np.pi)
+
+        # k_n
+        self.k_n = (
+            parameters["Operating Conditions"]["Input Frequency"]
+            / parameters["Operating Conditions"]["Output Frequency"]
+        )
+        self.r = parameters["Loop Filter"]["R"]
+        self.c = parameters["Loop Filter"]["C"]
+
+    def get_transfer_function(self) -> signal.TransferFunction:
+        """Calculates the transfer function of the PLL loop.
+
+        Returns:
+            signal.TransferFunction: The transfer function of the PLL loop.
+
+        ---
+        """
+        # Create the transfer function
+        num = [
+            self.k_vco * self.k_pd * (self.tau[1] / (self.tau[0] + self.tau[1])),
+            self.k_vco
+            * self.k_pd
+            * (self.tau[1] / (self.tau[0] + self.tau[1]))
+            / self.tau[1],
+        ]
+        den = [
+            1,
+            (1 + self.k_n * self.k_pd * self.k_vco * self.tau[1])
+            / (self.tau[0] + self.tau[1]),
+            (self.k_n * self.k_pd * self.k_vco) / (self.tau[0] + self.tau[1]),
+        ]
+        return signal.TransferFunction(num, den)
+
+    @property
+    def tau(self) -> list[float]:
+        """Calculates the time constants of the PLL loop.
+
+        Returns:
+            list[float]: [s] The time constants of the PLL loop.
+
+        ---
+        """
+        # Calculate the time constants
+        return [self.r[0] * self.c[0], self.r[1] * self.c[0]]
+
+    @property
+    def natural_frequency(self) -> float:
+        """Calculates the natural frequency of the PLL loop in Hz.
+
+        Returns:
+            float: [Hz] The natural frequency of the PLL loop.
+
+        ---
+        """
+        # Return the natural frequency
+        return np.sqrt(
+            (self.k_vco * self.k_pd * self.k_n) / (self.tau[0] + self.tau[1])
+        )
+
+    @property
+    def damping_factor(self) -> float:
+        """Calculates the damping factor of the PLL loop.
+
+        Returns:
+            float: [-] The damping factor of the PLL loop.
+
+        ---
+        """
+        return (self.natural_frequency / 2) * (
+            self.tau[1] + 1 / (self.k_vco * self.k_pd * self.k_n)
+        )
+
+
 # === Execution Modi ===
 def design(parameters: dict) -> None:
-    pass
+    """Designs the PLL loop filter.
+
+    Args:
+        parameters (dict): The parameters from the json file.
+    """
+    # Inform the user
+    cprint("Designing PLL Loop", "black", "on_green", attrs=["bold"])
+    cprint("-> Fitting R1 and R2 values. C is taken from ", "yellow", end="")
+    cprint("parameters.json.", "yellow", attrs=["bold"])
+    pll = HC4046(parameters)
+
+    # Define the residuals
+    def residuals(x: list[float]) -> list[float]:
+        # Update the pll parameters
+        pll.r = x[:]
+
+        # Convert the target frequency to rad/s
+        target_frequency = parameters["Design"]["Natural Frequency"] * 2 * np.pi
+
+        # Return the residuals
+        return [
+            pll.natural_frequency - target_frequency,
+            pll.damping_factor - parameters["Design"]["Damping Factor"],
+        ]
+
+    # Optimize the loop filter resistance values
+    result = optimize.least_squares(
+        residuals,
+        pll.r,
+        bounds=(0, np.inf),
+    )
+
+    # Print the results
+    if result.success:
+        print_value(pll.r[0] * 1e-3, "R1", "kOhm")
+        print_value(pll.r[1] * 1e-3, "R2", "kOhm")
+        print_value(pll.c[0] * 1e12, "C", "pF")
+    else:
+        print("Optimization failed.")
+        return
+
+    # Analyze the loop filter
+    print_value(1e-3 * pll.natural_frequency / (2 * np.pi), "Natural Frequency", "kHz")
+    print_value(pll.damping_factor, "Damping Factor", "-")
 
 
 def analyze(parameters: dict) -> None:
@@ -121,18 +270,85 @@ def analyze(parameters: dict) -> None:
     and printed to the console.
 
     Args:
+        pll (PLL): The pll loop to analyze.
+
+    ---
+    """
+    # Inform the user
+    cprint("PLL Loop", "black", "on_green", attrs=["bold"])
+
+    # Print the PLL parameters
+    pll = HC4046(parameters)
+    print_value(1e-3 * pll.natural_frequency / (2 * np.pi), "Natural Frequency", "kHz")
+    print_value(pll.damping_factor, "Damping Factor", "-")
+
+    # Analyze the loop filter bandwidth
+    cprint("Loop Filter", "black", "on_green", attrs=["bold"])
+    w_3db = 1 / (pll.tau[0] + pll.tau[1])
+    gain_pass = pll.tau[1] / (pll.tau[0] + pll.tau[1])
+    print_value(1e-3 * w_3db / (2 * np.pi), "3 dB Bandwidth", "kHz")
+    print_value(20* np.log(gain_pass), "Passband Gain", "dB")
+
+
+def get_kvco(parameters: dict) -> None:
+    """Extract the `k_vco` S parameter from the measured data.
+
+    Args:
         parameters (dict): The parameters from the json file.
 
     ---
     """
     # Inform the user
-    cprint("Analyzing PLL Loop", "black", "on_green", attrs=["bold"])
+    cprint("Extracting k_vco", "black", "on_green", attrs=["bold"])
 
-    # Print the results
-    for i, pole in enumerate(pll_transfer_function(parameters).poles):
-        cprint(f"Pole: {i}", "white", "on_blue", attrs=["bold"])
-        print(f"{'Natural frequency:':20} {get_natural_frequency(pole):>14.2f} [Hz]")
-        print(f"{'Damping factor:':20} {get_damping_factor(pole):>14.2f} [-]")
+    # Load the measured data
+    vco_data = Path(__file__).parent / "vco.csv"
+    print(f"Using data from: {vco_data}")
+    data = np.loadtxt(vco_data, delimiter=",", skiprows=1)
+    voltage = data[:, 0]
+    frequency = data[:, 1] * 1e3  # Scale the frequency column from KHz to Hz
+
+    # Get the index which is closed to the operating frequency
+    index = np.argmax(frequency >= parameters["Operating Conditions"]["Output Frequency"])
+
+    # Calculate the local slope in [Hz/V] using the three-point-midpoint formula
+    grad = np.gradient(frequency, voltage)
+
+    # Calculate the k_vco parameter
+    k_vco = 2 * np.pi * grad[index]
+
+    # Print the result
+    print_value(k_vco * 1e-3, "k_vco", "kHz/V")
+
+
+def step(parameters: dict) -> None:
+    """Plots the step response of the PLL loop.
+
+    Args:
+        parameters (dict): The parameters from the json file.
+
+    ---
+    """
+    # Inform the user
+    cprint("Plotting Step Response", "black", "on_green", attrs=["bold"])
+
+    # Create the PLL loop
+    pll = HC4046(parameters)
+
+    # Create the transfer function
+    tf = pll.get_transfer_function()
+
+    # Calculate the step response
+    t, y = signal.step(tf)
+
+    # Plot the step response
+    _, ax = plt.subplots()
+    ax.plot(t * 1e6, y)
+    ax.set_xlabel("Time [us]")
+    ax.set_ylabel("Amplitude [-]")
+    ax.set_title("Step Response")
+    ax.grid(True)
+    plt.show()
 
 
 # === Main ===
