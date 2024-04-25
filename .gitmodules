@@ -1,0 +1,3 @@
+[submodule "firmware/extern/OTOS"]
+	path = firmware/extern/OTOS
+	url = git@github.com:SebastianOberschwendtner/OTOS.git
